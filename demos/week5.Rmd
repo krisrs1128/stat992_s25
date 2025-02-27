@@ -1,0 +1,113 @@
+---
+title: Week 5 Demo
+author: Kris Sankaran
+output: rmdformats::readthedown
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, cache = TRUE)
+```
+
+```{r}
+library(DALEX)
+library(caret)
+library(iml)
+library(scico)
+library(tidyverse)
+set.seed(20250227)
+theme_set(theme_bw())
+```
+
+# Simulate Data
+
+This demo recreates the simulation example from Apley and Zhu (2020). We have
+two extremely correlated predictors and a noiseless regression $y = x_1 + x_2 ^
+2$.
+
+```{r}
+N <- 1000
+df <- data.frame(u = runif(N, 0, 1)) |>
+    mutate(
+        x1 = u + rnorm(N, 0, 0.05),
+        x2 = u + rnorm(N, 0, 0.05),
+        y = x1 + x2^2
+    )
+```
+
+Here are the raw data without any model fitting or explanation. The quadratic
+effect is extremely subtle, because of the high correlation between features.
+
+```{r}
+breaks <- seq(-1.2, 1.2, by = 0.1)
+ggplot(df, aes(x2, y)) +
+    geom_point(aes(col = cut(x1, breaks = breaks))) +
+    scale_color_scico_d(palette = "berlin") +
+    facet_wrap(~ cut(x1, breaks = breaks), scales = "free", nrow = 3)
+
+ggplot(df, aes(x1, y)) +
+    geom_point(aes(col = cut(x2, breaks = breaks))) +
+    scale_color_scico_d(palette = "berlin") +
+    facet_wrap(~ cut(x2, breaks = breaks), scales = "free", nrow = 3)
+```
+
+# PDP and ALE Profiles
+
+Let's fit a gradient boosting model to these data.
+
+```{r}
+x <- select(df, starts_with("x"))
+fit <- train(x = x, y = df$y, method = "gbm", verbose = FALSE)
+```
+
+We'll use the `iml` package to compute PDP and ALE plots for $x_{2}$. The two
+approaches actually seem to both recover the quadratic effects reasonably well,
+though their $y$-axis ranges are not the same (are they being centered
+somehow?).
+
+```{r}
+predictor <- Predictor$new(fit, data = x, y = df$y)
+pdp <- FeatureEffect$new(predictor, feature = "x2", method = "pdp")
+pdp$plot()
+```
+
+```{r}
+predictor <- Predictor$new(fit, data = x, y = df$y)
+ale <- FeatureEffect$new(predictor, feature = "x2", method = "ale")
+ale$plot()
+```
+
+If someone can give a satisfactory explanation for why these results are
+different from the paper then they don't have to do HW2.
+
+# ICE Profiles
+
+It's also possible to compute the ICE profiles using `iml`, but we want a little
+more control on the plot, so we'll extract profiles using the `DALEX` package.
+
+```{r}
+df$y_hat <- predict(fit, x)
+explainer <- DALEX::explain(fit, x)
+profile <- model_profile(explainer)
+profile_df <- as_tibble(profile$cp_profiles)
+```
+
+These profiles allow us to see the extrapolation issue. Since the two variables
+are correlated, we end up averaging curves that are evaluated at $\left(x_{1},
+x_{2}\right)$ combinations that we've never observed. This attenuates the
+estimated effects.
+
+```{r}
+profile_df |>
+    filter(`_vname_` == "x1") |>
+    ggplot() +
+    geom_line(aes(x1, `_yhat_`, group = `_ids_`, col = x2), alpha = 0.4, linewidth = 0.2) +
+    scale_color_scico(palette = "berlin") +
+    geom_point(data = df, aes(x1, y_hat))
+
+profile_df |>
+    filter(`_vname_` == "x2") |>
+    ggplot() +
+    geom_line(aes(x2, `_yhat_`, group = `_ids_`, col = x1), alpha = 0.4, linewidth = 0.2) +
+    scale_color_scico(palette = "berlin") +
+    geom_point(data = df, aes(x2, y_hat))
+```
